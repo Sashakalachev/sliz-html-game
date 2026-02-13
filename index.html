@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slither.io Clone - Мультиплеер</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            overflow: hidden;
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        #gameCanvas {
+            display: block;
+            background: #2d3436;
+            cursor: none;
+        }
+
+        #startScreen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 255, 255, 0.95);
+            padding: 40px;
+            border-radius: 20px;
+            text-align: center;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            z-index: 10;
+        }
+
+        #startScreen h1 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 48px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        #nameInput {
+            padding: 15px;
+            font-size: 18px;
+            border: 2px solid #667eea;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            width: 300px;
+            outline: none;
+            transition: all 0.3s;
+        }
+
+        #nameInput:focus {
+            border-color: #764ba2;
+            box-shadow: 0 0 10px rgba(118, 75, 162, 0.3);
+        }
+
+        #startButton {
+            padding: 15px 40px;
+            font-size: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            font-weight: bold;
+        }
+
+        #startButton:hover {
+            transform: scale(1.05);
+        }
+
+        #startButton:active {
+            transform: scale(0.95);
+        }
+
+        .controls {
+            margin-top: 20px;
+            color: #666;
+            font-size: 14px;
+        }
+
+        #stats {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 10px;
+            font-size: 18px;
+            z-index: 5;
+            font-weight: bold;
+        }
+
+        #leaderboard {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            z-index: 5;
+            min-width: 200px;
+        }
+
+        #leaderboard h3 {
+            margin-bottom: 10px;
+            color: #ffd700;
+            text-align: center;
+        }
+
+        .leaderboard-entry {
+            padding: 5px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .leaderboard-entry:last-child {
+            border-bottom: none;
+        }
+
+        #minimap {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 200px;
+            height: 200px;
+            background: rgba(0, 0, 0, 0.7);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 10px;
+            z-index: 5;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <canvas id="minimap"></canvas>
+    
+    <div id="startScreen">
+        <h1>🐍 Slither.io</h1>
+        <input type="text" id="nameInput" placeholder="Введите ваше имя" maxlength="20" value="Игрок">
+        <br>
+        <button id="startButton">Начать игру</button>
+        <div class="controls">
+            <p>🖱️ Управление мышью</p>
+            <p>🚀 Пробел или ЛКМ - ускорение</p>
+        </div>
+    </div>
+
+    <div id="stats" style="display: none;">
+        <div>Очки: <span id="score">0</span></div>
+        <div>Игроков: <span id="playerCount">0</span></div>
+    </div>
+
+    <div id="leaderboard" style="display: none;">
+        <h3>🏆 Топ игроков</h3>
+        <div id="leaderboardList"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const minimap = document.getElementById('minimap');
+        const minimapCtx = minimap.getContext('2d');
+
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        let socket;
+        let playerId;
+        let players = {};
+        let food = [9000];
+        let mapSize = 3000;
+        let camera = { x: 0, y: 0 };
+        let mouseX = canvas.width / 2;
+        let mouseY = canvas.height / 2;
+        let isBoosting = false;
+        let deathParticles = []; // Частицы смерти
+
+        // Обработчики событий стартового экрана
+        document.getElementById('startButton').addEventListener('click', startGame);
+        document.getElementById('nameInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') startGame();
+        });
+
+        function startGame() {
+            const name = document.getElementById('nameInput').value || 'Игрок';
+            document.getElementById('startScreen').style.display = 'none';
+            document.getElementById('stats').style.display = 'block';
+            document.getElementById('leaderboard').style.display = 'block';
+
+            // Подключение к серверу
+            socket = io();
+
+            socket.on('init', (data) => {
+                playerId = data.id;
+                players = data.players;
+                food = data.food;
+                mapSize = data.mapSize;
+                
+                socket.emit('setName', name);
+            });
+
+            socket.on('update', (data) => {
+                // Проверяем смерть игроков (если количество сегментов резко уменьшилось)
+                Object.keys(data.players).forEach(pid => {
+                    const newPlayer = data.players[pid];
+                    const oldPlayer = players[pid];
+                    
+                    if (oldPlayer && oldPlayer.segments.length > 20 && newPlayer.segments.length <= 10) {
+                        // Игрок умер! Создаём частицы взрыва
+                        createDeathExplosion(oldPlayer);
+                    }
+                });
+                
+                players = data.players;
+                food = data.food;
+            });
+
+            // Управление
+            canvas.addEventListener('mousemove', (e) => {
+                mouseX = e.clientX;
+                mouseY = e.clientY;
+            });
+
+            canvas.addEventListener('mousedown', () => {
+                isBoosting = true;
+                socket.emit('boost', true);
+            });
+
+            canvas.addEventListener('mouseup', () => {
+                isBoosting = false;
+                socket.emit('boost', false);
+            });
+
+            window.addEventListener('keydown', (e) => {
+                if (e.code === 'Space') {
+                    isBoosting = true;
+                    socket.emit('boost', true);
+                }
+            });
+
+            window.addEventListener('keyup', (e) => {
+                if (e.code === 'Space') {
+                    isBoosting = false;
+                    socket.emit('boost', false);
+                }
+            });
+
+            // Запуск игрового цикла
+            gameLoop();
+        }
+
+        function gameLoop() {
+            if (!playerId || !players[playerId]) {
+                requestAnimationFrame(gameLoop);
+                return;
+            }
+
+            const player = players[playerId];
+
+            // Вычисление угла к курсору
+            const dx = mouseX - canvas.width / 2;
+            const dy = mouseY - canvas.height / 2;
+            const angle = Math.atan2(dy, dx);
+            
+            socket.emit('updateAngle', angle);
+
+            // Обновление камеры
+            camera.x = player.x - canvas.width / 2;
+            camera.y = player.y - canvas.height / 2;
+
+            // Обновление частиц смерти
+            updateDeathParticles();
+
+            // Отрисовка
+            render();
+
+            // Обновление интерфейса
+            updateUI();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function render() {
+            // Очистка canvas
+            ctx.fillStyle = '#2d3436';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Отрисовка границ карты
+            drawMapBorders();
+
+            // Отрисовка сетки
+            drawGrid();
+
+            // Отрисовка еды
+            food.forEach(f => {
+                const screenX = f.x - camera.x;
+                const screenY = f.y - camera.y;
+
+                if (screenX < -20 || screenX > canvas.width + 20 || 
+                    screenY < -20 || screenY > canvas.height + 20) return;
+
+                const foodValue = f.value || 1;
+                const radius = foodValue > 1 ? 7 : 5; // Еда от змеек крупнее
+                
+                // Свечение для ценной еды
+                if (foodValue > 1) {
+                    ctx.shadowBlur = 10;
+                    ctx.shadowColor = f.color;
+                }
+
+                ctx.fillStyle = f.color;
+                ctx.beginPath();
+                ctx.arc(screenX, screenY, radius, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Обводка для ценной еды
+                if (foodValue > 1) {
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+                
+                ctx.shadowBlur = 0;
+            });
+
+            // Отрисовка игроков
+            Object.values(players).forEach(p => {
+                // Отрисовка тела
+                for (let i = p.segments.length - 1; i >= 0; i--) {
+                    const segment = p.segments[i];
+                    const screenX = segment.x - camera.x;
+                    const screenY = segment.y - camera.y;
+
+                    if (screenX < -30 || screenX > canvas.width + 30 || 
+                        screenY < -30 || screenY > canvas.height + 30) continue;
+
+                    const radius = i === 0 ? 12 : 10;
+                    
+                    // Тень
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+                    ctx.beginPath();
+                    ctx.arc(screenX + 2, screenY + 2, radius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Тело
+                    ctx.fillStyle = p.color;
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(screenX, screenY, radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
+
+                    // Глаза на голове
+                    if (i === 0) {
+                        const eyeOffset = 5;
+                        const eyeAngle = p.angle;
+                        
+                        // Левый глаз
+                        const leftEyeX = screenX + Math.cos(eyeAngle - 0.3) * eyeOffset;
+                        const leftEyeY = screenY + Math.sin(eyeAngle - 0.3) * eyeOffset;
+                        ctx.fillStyle = 'white';
+                        ctx.beginPath();
+                        ctx.arc(leftEyeX, leftEyeY, 3, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.fillStyle = 'black';
+                        ctx.beginPath();
+                        ctx.arc(leftEyeX, leftEyeY, 1.5, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        // Правый глаз
+                        const rightEyeX = screenX + Math.cos(eyeAngle + 0.3) * eyeOffset;
+                        const rightEyeY = screenY + Math.sin(eyeAngle + 0.3) * eyeOffset;
+                        ctx.fillStyle = 'white';
+                        ctx.beginPath();
+                        ctx.arc(rightEyeX, rightEyeY, 3, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.fillStyle = 'black';
+                        ctx.beginPath();
+                        ctx.arc(rightEyeX, rightEyeY, 1.5, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+
+                // Имя игрока
+                const headX = p.segments[0].x - camera.x;
+                const headY = p.segments[0].y - camera.y - 20;
+                
+                ctx.font = 'bold 14px Arial';
+                ctx.fillStyle = 'white';
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 3;
+                ctx.textAlign = 'center';
+                ctx.strokeText(p.name, headX, headY);
+                ctx.fillText(p.name, headX, headY);
+            });
+
+            // Отрисовка частиц взрыва
+            drawDeathParticles();
+
+            // Отрисовка миникарты
+            drawMinimap();
+        }
+
+        function drawGrid() {
+            const gridSize = 50;
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.lineWidth = 1;
+
+            const startX = Math.floor(camera.x / gridSize) * gridSize;
+            const startY = Math.floor(camera.y / gridSize) * gridSize;
+
+            for (let x = startX; x < camera.x + canvas.width; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x - camera.x, 0);
+                ctx.lineTo(x - camera.x, canvas.height);
+                ctx.stroke();
+            }
+
+            for (let y = startY; y < camera.y + canvas.height; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y - camera.y);
+                ctx.lineTo(canvas.width, y - camera.y);
+                ctx.stroke();
+            }
+        }
+
+        function drawMapBorders() {
+            // Рисуем границы карты
+            ctx.strokeStyle = '#ff0000';
+            ctx.lineWidth = 10;
+            ctx.setLineDash([20, 10]);
+            
+            // Верхняя граница
+            if (camera.y < 100) {
+                ctx.beginPath();
+                ctx.moveTo(-camera.x, -camera.y);
+                ctx.lineTo(mapSize - camera.x, -camera.y);
+                ctx.stroke();
+            }
+            
+            // Нижняя граница
+            if (camera.y + canvas.height > mapSize - 100) {
+                ctx.beginPath();
+                ctx.moveTo(-camera.x, mapSize - camera.y);
+                ctx.lineTo(mapSize - camera.x, mapSize - camera.y);
+                ctx.stroke();
+            }
+            
+            // Левая граница
+            if (camera.x < 100) {
+                ctx.beginPath();
+                ctx.moveTo(-camera.x, -camera.y);
+                ctx.lineTo(-camera.x, mapSize - camera.y);
+                ctx.stroke();
+            }
+            
+            // Правая граница
+            if (camera.x + canvas.width > mapSize - 100) {
+                ctx.beginPath();
+                ctx.moveTo(mapSize - camera.x, -camera.y);
+                ctx.lineTo(mapSize - camera.x, mapSize - camera.y);
+                ctx.stroke();
+            }
+            
+            ctx.setLineDash([]);
+        }
+
+        function createDeathExplosion(player) {
+            // Создаём эффектные частицы взрыва
+            const head = player.segments[0];
+            for (let i = 0; i < 30; i++) {
+                const angle = (Math.PI * 2 * i) / 30;
+                const speed = 2 + Math.random() * 3;
+                deathParticles.push({
+                    x: head.x,
+                    y: head.y,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed,
+                    color: player.color,
+                    life: 60,
+                    size: 3 + Math.random() * 4
+                });
+            }
+        }
+
+        function updateDeathParticles() {
+            for (let i = deathParticles.length - 1; i >= 0; i--) {
+                const p = deathParticles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vx *= 0.98;
+                p.vy *= 0.98;
+                p.life--;
+                
+                if (p.life <= 0) {
+                    deathParticles.splice(i, 1);
+                }
+            }
+        }
+
+        function drawDeathParticles() {
+            deathParticles.forEach(p => {
+                const screenX = p.x - camera.x;
+                const screenY = p.y - camera.y;
+                
+                const alpha = p.life / 60;
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = p.color;
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = p.color;
+                
+                ctx.beginPath();
+                ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.shadowBlur = 0;
+                ctx.globalAlpha = 1;
+            });
+        }
+
+        function drawMinimap() {
+            minimapCtx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            minimapCtx.fillRect(0, 0, 200, 200);
+
+            const scale = 200 / mapSize;
+
+            // Отрисовка игроков на миникарте
+            Object.values(players).forEach(p => {
+                const x = p.x * scale;
+                const y = p.y * scale;
+
+                minimapCtx.fillStyle = p.id === playerId ? '#00ff00' : '#ff0000';
+                minimapCtx.beginPath();
+                minimapCtx.arc(x, y, 3, 0, Math.PI * 2);
+                minimapCtx.fill();
+            });
+        }
+
+        function updateUI() {
+            if (!playerId || !players[playerId]) return;
+
+            const player = players[playerId];
+            document.getElementById('score').textContent = player.score;
+            document.getElementById('playerCount').textContent = Object.keys(players).length;
+
+            // Обновление таблицы лидеров
+            const sorted = Object.values(players).sort((a, b) => b.score - a.score).slice(0, 5);
+            const leaderboardList = document.getElementById('leaderboardList');
+            leaderboardList.innerHTML = sorted.map((p, index) => {
+                const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : '👤';
+                const isMe = p.id === playerId ? ' (Вы)' : '';
+                return `<div class="leaderboard-entry">${medal} ${p.name}${isMe}: ${p.score}</div>`;
+            }).join('');
+        }
+
+        // Адаптация размера canvas
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+    </script>
+</body>
+</html>
